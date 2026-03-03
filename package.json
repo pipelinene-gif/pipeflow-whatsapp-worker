@@ -2,9 +2,10 @@
   "name": "pipeflow-whatsapp-worker",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
-    "start": "ts-node src/index.ts"
+    "build": "tsc",
+    "start": "node dist/index.js"
   },
   "keywords": [],
   "author": "",
@@ -18,15 +19,13 @@
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "pino": "^10.3.1",
-    "qrcode": "^1.5.4",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^25.3.3",
     "@types/qrcode": "^1.5.6",
-    "nodemon": "^3.1.14"
+    "typescript": "^5.9.3"
   }
 }
