@@ -12,8 +12,37 @@ import { upsertSession, sendInboundEvent } from './supabase';
 
 const activeSessions: Map<string, any> = new Map();
 
+function normalizePhone(value: string): string | null {
+  const digits = (value || '').replace(/\D/g, '');
+
+  // aceita algo entre 10 e 15 dígitos
+  if (!digits || digits.length < 10 || digits.length > 15) {
+    return null;
+  }
+
+  return `+${digits}`;
+}
+
+function extractPhoneFromJid(rawJid: string): string | null {
+  if (!rawJid) return null;
+
+  // caso normal: contato individual
+  if (rawJid.endsWith('@s.whatsapp.net')) {
+    const base = rawJid.replace('@s.whatsapp.net', '');
+    return normalizePhone(base);
+  }
+
+  // fallback: alguns casos vêm como @lid
+  // aqui extraímos apenas os dígitos e validamos tamanho
+  if (rawJid.endsWith('@lid')) {
+    const base = rawJid.replace('@lid', '');
+    return normalizePhone(base);
+  }
+
+  return null;
+}
+
 export async function startSession(userId: string) {
-  // Encerra sessão anterior, se existir
   if (activeSessions.has(userId)) {
     const oldSocket = activeSessions.get(userId);
     try {
@@ -22,19 +51,14 @@ export async function startSession(userId: string) {
     activeSessions.delete(userId);
   }
 
-  // Pasta de auth por usuário (persistência local do worker)
   const authFolder = path.join(__dirname, '..', 'auth_info_baileys', userId);
-
   const { state, saveCreds } = await useMultiFileAuthState(authFolder);
-
-  // Pega versão mais recente do WA
   const { version } = await fetchLatestBaileysVersion();
 
   const socket = makeWASocket({
     auth: state,
     version,
     logger: pino({ level: 'debug' }),
-    // Não usar printQRInTerminal (deprecated). O QR vai pro Supabase.
   });
 
   activeSessions.set(userId, socket);
@@ -50,7 +74,6 @@ export async function startSession(userId: string) {
       lastDisconnect: !!lastDisconnect,
     });
 
-    // QR gerado -> salva no Supabase
     if (qr) {
       try {
         console.log('QR RECEIVED');
@@ -65,7 +88,6 @@ export async function startSession(userId: string) {
       }
     }
 
-    // Conectou -> marca connected e limpa qr
     if (connection === 'open') {
       console.log('WHATSAPP CONNECTED');
       try {
@@ -76,7 +98,6 @@ export async function startSession(userId: string) {
       return;
     }
 
-    // Desconectou
     if (connection === 'close') {
       const err = lastDisconnect?.error as Boom | undefined;
       const statusCode = err?.output?.statusCode;
@@ -87,7 +108,6 @@ export async function startSession(userId: string) {
         outputStatusCode: err?.output?.statusCode,
       });
 
-      // 401 -> limpa auth e força novo QR
       if (statusCode === 401) {
         console.log('401 DETECTED -> CLEARING AUTH AND RESTARTING');
 
@@ -112,7 +132,6 @@ export async function startSession(userId: string) {
         return;
       }
 
-      // loggedOut -> não reconectar
       if (statusCode === DisconnectReason.loggedOut) {
         console.log('LOGGED OUT');
         try {
@@ -122,56 +141,78 @@ export async function startSession(userId: string) {
         return;
       }
 
-      // outros erros -> tenta reconectar
       console.log('RESTARTING SESSION...');
       activeSessions.delete(userId);
       await startSession(userId);
     }
   });
 
-  // Mensagens -> envia evento pro CRM
   socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
     console.log('messages.upsert:', type, messages?.length);
 
     for (const msg of messages) {
       try {
-        const rawJid = msg.key.remoteJid || '';
+        if (!msg?.key) continue;
 
-        console.log('msg recebida:', {
+        const rawJid = msg.key.remoteJid || '';
+        const fromMe = !!msg.key.fromMe;
+        const pushName = msg.pushName || '';
+        const participant = msg.key.participant || '';
+
+        console.log('[DEBUG MESSAGE]', {
           type,
-          fromMe: msg.key.fromMe,
+          fromMe,
           remoteJid: rawJid,
-          pushName: msg.pushName || '',
+          participant,
+          pushName,
+          messageId: msg.key.id,
         });
 
         if (!rawJid) continue;
-        if (rawJid.endsWith('@g.us')) continue;
-        if (rawJid === 'status@broadcast') continue;
 
+        // ignora grupos
+        if (rawJid.endsWith('@g.us')) {
+          console.log('[IGNORADO GRUPO]', rawJid);
+          continue;
+        }
+
+        // ignora status
+        if (rawJid === 'status@broadcast') {
+          console.log('[IGNORADO STATUS]', rawJid);
+          continue;
+        }
+
+        // ignora broadcasts/outros tipos estranhos
         if (
           !rawJid.endsWith('@s.whatsapp.net') &&
           !rawJid.endsWith('@lid')
-        ) continue;
-
-        let phone = '';
-
-        if (rawJid.endsWith('@s.whatsapp.net')) {
-          phone = '+' + rawJid.replace('@s.whatsapp.net', '');
+        ) {
+          console.log('[IGNORADO JID NAO SUPORTADO]', rawJid);
+          continue;
         }
 
-        if (rawJid.endsWith('@lid')) {
-          phone = '+' + rawJid.replace('@lid', '');
+        const phone = extractPhoneFromJid(rawJid);
+
+        if (!phone) {
+          console.log('[PHONE INVALIDO - IGNORADO]', { rawJid });
+          continue;
         }
 
-        if (!phone || phone === '+') continue;
+        const name = pushName || '';
 
-        const name = msg.pushName || '';
-
-        console.log('enviando para CRM:', { phone, name });
+        console.log('[ENVIANDO PARA CRM]', {
+          direction: fromMe ? 'outbound' : 'inbound',
+          rawJid,
+          phone,
+          name,
+        });
 
         await sendInboundEvent(userId, phone, name);
 
-        console.log('ENVIADO COM SUCESSO');
+        console.log('[ENVIADO COM SUCESSO]', {
+          direction: fromMe ? 'outbound' : 'inbound',
+          phone,
+        });
       } catch (e: any) {
         console.error('FAILED sendInboundEvent:', e?.message || e);
       }
