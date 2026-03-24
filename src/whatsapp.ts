@@ -138,7 +138,6 @@ export async function startSession(userId: string) {
     if (type !== 'notify') return;
 
     for (const msg of messages) {
-      if (msg.key.fromMe) continue;
       if (msg.key.remoteJid?.endsWith('@g.us')) continue;
 
       const rawJid = msg.key.remoteJid || '';
