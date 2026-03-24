@@ -13,7 +13,6 @@ import { upsertSession, sendInboundEvent } from './supabase';
 const activeSessions: Map<string, any> = new Map();
 
 export async function startSession(userId: string) {
-  // Encerra sessão anterior, se existir
   if (activeSessions.has(userId)) {
     const oldSocket = activeSessions.get(userId);
     try {
@@ -22,19 +21,14 @@ export async function startSession(userId: string) {
     activeSessions.delete(userId);
   }
 
-  // Pasta de auth por usuário (persistência local do worker)
   const authFolder = path.join(__dirname, '..', 'auth_info_baileys', userId);
-
   const { state, saveCreds } = await useMultiFileAuthState(authFolder);
-
-  // Pega versão mais recente do WA
   const { version } = await fetchLatestBaileysVersion();
 
   const socket = makeWASocket({
     auth: state,
     version,
     logger: pino({ level: 'debug' }),
-    // Não usar printQRInTerminal (deprecated). O QR vai pro Supabase.
   });
 
   activeSessions.set(userId, socket);
@@ -50,104 +44,86 @@ export async function startSession(userId: string) {
       lastDisconnect: !!lastDisconnect,
     });
 
-    // ✅ 1) QR GERADO -> salva no Supabase
     if (qr) {
       try {
-        console.log('QR RECEIVED');
-
         const qrBase64 = await QRCode.toDataURL(qr);
         const base64Only = qrBase64.replace(/^data:image\/png;base64,/, '');
 
         await upsertSession(userId, 'pending_qr', base64Only);
-        console.log('QR SAVED TO SUPABASE');
+        console.log('QR SALVO');
       } catch (e: any) {
-        console.error('FAILED TO SAVE QR:', e?.message || e);
+        console.error('ERRO QR:', e?.message || e);
       }
     }
 
-    // ✅ 2) CONECTOU -> marca connected e limpa qr
     if (connection === 'open') {
-      console.log('WHATSAPP CONNECTED');
-      try {
-        await upsertSession(userId, 'connected', null);
-      } catch (e: any) {
-        console.error('FAILED TO MARK CONNECTED:', e?.message || e);
-      }
+      console.log('WHATSAPP CONECTADO');
+      await upsertSession(userId, 'connected', null);
       return;
     }
 
-    // ✅ 3) DESCONECTOU -> tratar 401 / loggedOut / reconectar
     if (connection === 'close') {
       const err = lastDisconnect?.error as Boom | undefined;
       const statusCode = err?.output?.statusCode;
 
-      console.log('DISCONNECT DETAIL:', {
-        statusCode,
-        message: err?.message,
-        outputStatusCode: err?.output?.statusCode,
-      });
+      console.log('DESCONECTADO:', statusCode);
 
-      // 🚨 3.1) 401 Unauthorized -> limpa auth state e força novo QR
       if (statusCode === 401) {
-        console.log('401 DETECTED -> CLEARING AUTH AND RESTARTING');
+        console.log('RESETANDO SESSÃO');
 
         try {
-          // encerra socket atual
-          try {
-            socket.end(undefined);
-          } catch {}
+          socket.end(undefined);
+        } catch {}
 
-          activeSessions.delete(userId);
+        activeSessions.delete(userId);
+        await fs.rm(authFolder, { recursive: true, force: true });
 
-          // apaga credenciais locais
-          await fs.rm(authFolder, { recursive: true, force: true });
-
-          // marca sessão como pending (sem qr por enquanto)
-          try {
-            await upsertSession(userId, 'pending_qr', null);
-          } catch {}
-
-          // reinicia -> vai gerar novo QR no próximo connection.update
-          await startSession(userId);
-        } catch (e: any) {
-          console.error('FAILED TO HANDLE 401:', e?.message || e);
-        }
-
+        await upsertSession(userId, 'pending_qr', null);
+        await startSession(userId);
         return;
       }
 
-      // 🔒 3.2) loggedOut -> não reconectar
       if (statusCode === DisconnectReason.loggedOut) {
-        console.log('LOGGED OUT');
-        try {
-          await upsertSession(userId, 'disconnected', null);
-        } catch {}
+        await upsertSession(userId, 'disconnected', null);
         activeSessions.delete(userId);
         return;
       }
 
-      // 🔄 3.3) outros erros -> tenta reconectar
-      console.log('RESTARTING SESSION...');
       activeSessions.delete(userId);
       await startSession(userId);
     }
   });
 
-  // Inbound messages -> envia evento pro CRM
+  // 🔥 BLOCO CORRIGIDO
   socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
-    if (type !== 'notify') return;
+    console.log('messages.upsert:', type, messages?.length);
 
     for (const msg of messages) {
-      if (msg.key.remoteJid?.endsWith('@g.us')) continue;
-
-      const rawJid = msg.key.remoteJid || '';
-      const phone = '+' + rawJid.replace('@s.whatsapp.net', '');
-      const name = msg.pushName || '';
-
       try {
+        const rawJid = msg.key.remoteJid || '';
+
+        console.log('msg recebida:', {
+          type,
+          fromMe: msg.key.fromMe,
+          remoteJid: rawJid,
+          pushName: msg.pushName || '',
+        });
+
+        if (!rawJid) continue;
+        if (rawJid.endsWith('@g.us')) continue;
+        if (rawJid === 'status@broadcast') continue;
+        if (!rawJid.endsWith('@s.whatsapp.net')) continue;
+
+        const phone = '+' + rawJid.replace('@s.whatsapp.net', '');
+        const name = msg.pushName || '';
+
+        console.log('enviando para CRM:', { phone, name });
+
         await sendInboundEvent(userId, phone, name);
+
+        console.log('ENVIADO COM SUCESSO');
       } catch (e: any) {
-        console.error('FAILED sendInboundEvent:', e?.message || e);
+        console.error('ERRO sendInboundEvent:', e?.message || e);
       }
     }
   });
@@ -167,8 +143,6 @@ export async function disconnectSession(userId: string) {
     } catch {}
     activeSessions.delete(userId);
 
-    try {
-      await upsertSession(userId, 'disconnected', null);
-    } catch {}
+    await upsertSession(userId, 'disconnected', null);
   }
 }
