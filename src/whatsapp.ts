@@ -1,457 +1,301 @@
-import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-} from '@whiskeysockets/baileys';
-import { Boom } from '@hapi/boom';
-import * as QRCode from 'qrcode';
-import pino from 'pino';
-import path from 'path';
-import fs from 'fs/promises';
-import { upsertSession, sendInboundEvent } from './supabase';
-
-const activeSessions: Map<string, any> = new Map();
-const reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
-const processedMessages: Map<string, number> = new Map();
-
-const MESSAGE_CACHE_TTL_MS = 1000 * 60 * 30; // 30 min
-const MAX_MESSAGE_AGE_SECONDS = 60 * 15; // 15 min
-
-function normalizePhone(value: string): string | null {
-  const digits = (value || '').replace(/\D/g, '');
-
-  if (!digits || digits.length < 10 || digits.length > 15) {
-    return null;
-  }
-
-  return `+${digits}`;
+[QR] QR salvo no Supabase para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[RECONNECT] Reiniciando a sessão do usuário c284559a-67b7-4a2f-95f3-f858b8b4c536
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'fechar',
+  hasQr: falso,
+  hasLastDisconnect: true
 }
-
-function extractPhoneFromJid(rawJid: string): string | null {
-  if (!rawJid) return null;
-
-  // Aceitar somente contato individual real
-  if (rawJid.endsWith('@s.whatsapp.net')) {
-    const base = rawJid.replace('@s.whatsapp.net', '');
-    return normalizePhone(base);
-  }
-
-  // IMPORTANTE:
-  // @lid não é confiável para criar lead
-  return null;
+[DESCONECTADO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  código de status: indefinido,
+  mensagem: indefinida
 }
-
-function hasMeaningfulContent(msg: any): boolean {
-  const content = msg?.message;
-  if (!content || typeof content !== 'object') return false;
-
-  const ignoredTopLevelTypes = new Set([
-    'protocolMessage',
-    'reactionMessage',
-    'pollUpdateMessage',
-    'senderKeyDistributionMessage',
-    'messageContextInfo',
-  ]);
-
-  const keys = Object.keys(content);
-  if (keys.length === 0) return false;
-
-  const usefulKeys = keys.filter((key) => !ignoredTopLevelTypes.has(key));
-  return usefulKeys.length > 0;
+[INÍCIO DA SESSÃO] usuário=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'conectando',
+  hasQr: falso,
+  hasLastDisconnect: falso
 }
-
-function getMessageTimestampSeconds(msg: any): number | null {
-  const raw = msg?.messageTimestamp;
-
-  if (!raw) return null;
-
-  if (typeof raw === 'number') return raw;
-  if (typeof raw === 'string') {
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  if (typeof raw?.low === 'number') {
-    return raw.low;
-  }
-
-  if (typeof raw?.toNumber === 'function') {
-    try {
-      return raw.toNumber();
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
+Sessão atualizada: desconectada
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: indefinida,
+  hasQr: verdadeiro,
+  hasLastDisconnect: falso
 }
-
-function isMessageTooOld(msg: any): boolean {
-  const ts = getMessageTimestampSeconds(msg);
-  if (!ts) return false;
-
-  const now = Math.floor(Date.now() / 1000);
-  return now - ts > MAX_MESSAGE_AGE_SECONDS;
+[QR] QR recebido para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+Sessão atualizada: pendente_qr
+[QR] QR salvo no Supabase para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[RECONNECT] Reiniciando a sessão do usuário c284559a-67b7-4a2f-95f3-f858b8b4c536
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'fechar',
+  hasQr: falso,
+  hasLastDisconnect: true
 }
-
-function buildProcessedMessageKey(userId: string, msg: any): string | null {
-  const id = msg?.key?.id;
-  const remoteJid = msg?.key?.remoteJid;
-
-  if (!id || !remoteJid) return null;
-  return `${userId}:${remoteJid}:${id}`;
+[DESCONECTADO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  código de status: indefinido,
+  mensagem: indefinida
 }
-
-function markMessageProcessed(key: string) {
-  processedMessages.set(key, Date.now());
+[INÍCIO DA SESSÃO] usuário=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'conectando',
+  hasQr: falso,
+  hasLastDisconnect: falso
 }
-
-function wasMessageProcessedRecently(key: string): boolean {
-  const ts = processedMessages.get(key);
-  if (!ts) return false;
-
-  if (Date.now() - ts > MESSAGE_CACHE_TTL_MS) {
-    processedMessages.delete(key);
-    return false;
-  }
-
-  return true;
+Sessão atualizada: desconectada
+  código de status: indefinido,
+  mensagem: indefinida
 }
-
-function cleanupProcessedMessages() {
-  const now = Date.now();
-
-  for (const [key, ts] of processedMessages.entries()) {
-    if (now - ts > MESSAGE_CACHE_TTL_MS) {
-      processedMessages.delete(key);
-    }
-  }
+[INÍCIO DA SESSÃO] usuário=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'conectando',
+  hasQr: falso,
+  hasLastDisconnect: falso
 }
-
-function clearReconnectTimer(userId: string) {
-  const timer = reconnectTimers.get(userId);
-  if (timer) {
-    clearTimeout(timer);
-    reconnectTimers.delete(userId);
-  }
+Sessão atualizada: desconectada
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: indefinida,
+  hasQr: verdadeiro,
+  hasLastDisconnect: falso
 }
-
-function scheduleReconnect(userId: string, delayMs = 3000) {
-  clearReconnectTimer(userId);
-
-  const timer = setTimeout(async () => {
-    reconnectTimers.delete(userId);
-
-    try {
-      console.log(`[RECONNECT] Reiniciando sessão do usuário ${userId}`);
-      await startSession(userId);
-    } catch (err: any) {
-      console.error(
-        `[RECONNECT ERROR] user=${userId}`,
-        err?.message || err
-      );
-    }
-  }, delayMs);
-
-  reconnectTimers.set(userId, timer);
+[QR] QR recebido para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+Sessão atualizada: pendente_qr
+[QR] QR salvo no Supabase para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[RECONNECT] Reiniciando a sessão do usuário c284559a-67b7-4a2f-95f3-f858b8b4c536
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'fechar',
+  hasQr: falso,
+  hasLastDisconnect: true
 }
-
-function safeSocketEnd(socket: any) {
-  try {
-    socket?.end?.(undefined);
-  } catch {}
+[DESCONECTADO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  código de status: indefinido,
+  mensagem: indefinida
 }
-
-function safeSocketLogout(socket: any) {
-  try {
-    return socket?.logout?.();
-  } catch {
-    return Promise.resolve();
-  }
+[INÍCIO DA SESSÃO] usuário=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'conectando',
+  hasQr: falso,
+  hasLastDisconnect: falso
 }
-
-async function destroyExistingSession(userId: string) {
-  const existing = activeSessions.get(userId);
-  if (existing) {
-    safeSocketEnd(existing);
-    activeSessions.delete(userId);
-  }
-
-  clearReconnectTimer(userId);
+Sessão atualizada: desconectada
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: indefinida,
+  hasQr: verdadeiro,
+  hasLastDisconnect: falso
 }
-
-export async function startSession(userId: string) {
-  cleanupProcessedMessages();
-
-  await destroyExistingSession(userId);
-
-  const authFolder = path.join(__dirname, '..', 'auth_info_baileys', userId);
-  const { state, saveCreds } = await useMultiFileAuthState(authFolder);
-  const { version } = await fetchLatestBaileysVersion();
-
-  console.log(`[SESSION START] user=${userId}`);
-
-  const socket = makeWASocket({
-    auth: state,
-    version,
-    logger: pino({ level: 'silent' }),
-    browser: ['PipeFlow Worker', 'Chrome', '1.0.0'],
-    markOnlineOnConnect: false,
-    syncFullHistory: false,
-    shouldIgnoreJid: (jid) => {
-      if (!jid) return true;
-      if (jid === 'status@broadcast') return true;
-      if (jid.endsWith('@g.us')) return true;
-      return false;
-    },
-  });
-
-  activeSessions.set(userId, socket);
-
-  socket.ev.on('creds.update', saveCreds);
-
-  socket.ev.on('connection.update', async (update: any) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    console.log('[CONNECTION UPDATE]', {
-      userId,
-      connection,
-      hasQr: !!qr,
-      hasLastDisconnect: !!lastDisconnect,
-    });
-
-    if (qr) {
-      try {
-        console.log(`[QR] QR recebido para user=${userId}`);
-
-        const qrBase64 = await QRCode.toDataURL(qr);
-        const base64Only = qrBase64.replace(/^data:image\/png;base64,/, '');
-
-        await upsertSession(userId, 'pending_qr', base64Only);
-        console.log(`[QR] QR salvo no Supabase para user=${userId}`);
-      } catch (e: any) {
-        console.error('[QR ERROR]', e?.message || e);
-      }
-    }
-
-    if (connection === 'open') {
-      console.log(`[CONNECTED] WhatsApp conectado para user=${userId}`);
-
-      clearReconnectTimer(userId);
-
-      try {
-        await upsertSession(userId, 'connected', null);
-      } catch (e: any) {
-        console.error('[CONNECTED ERROR]', e?.message || e);
-      }
-
-      return;
-    }
-
-    if (connection === 'close') {
-      const err = lastDisconnect?.error as Boom | undefined;
-      const statusCode = err?.output?.statusCode;
-
-      console.log('[DISCONNECTED]', {
-        userId,
-        statusCode,
-        message: err?.message,
-      });
-
-      activeSessions.delete(userId);
-
-      if (statusCode === 401) {
-        console.log(`[401] Sessão inválida. Limpando auth e gerando novo QR. user=${userId}`);
-
-        try {
-          safeSocketEnd(socket);
-          await fs.rm(authFolder, { recursive: true, force: true });
-          await upsertSession(userId, 'pending_qr', null);
-          scheduleReconnect(userId, 2000);
-        } catch (e: any) {
-          console.error('[401 HANDLE ERROR]', e?.message || e);
-          try {
-            await upsertSession(userId, 'disconnected', null);
-          } catch {}
-        }
-
-        return;
-      }
-
-      if (statusCode === DisconnectReason.loggedOut) {
-        console.log(`[LOGGED OUT] user=${userId}`);
-
-        try {
-          await upsertSession(userId, 'disconnected', null);
-        } catch {}
-
-        clearReconnectTimer(userId);
-        return;
-      }
-
-      try {
-        await upsertSession(userId, 'disconnected', null);
-      } catch {}
-
-      scheduleReconnect(userId, 3000);
-    }
-  });
-
-  socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
-    console.log('[MESSAGES UPSERT]', {
-      userId,
-      type,
-      count: messages?.length || 0,
-    });
-
-    // Regra importante:
-    // processar somente notify para reduzir risco de histórico/sync
-    if (type !== 'notify') {
-      console.log(`[IGNORADO] type=${type} user=${userId}`);
-      return;
-    }
-
-    for (const msg of messages || []) {
-      try {
-        if (!msg?.key) {
-          console.log('[IGNORADO] mensagem sem key');
-          continue;
-        }
-
-        const rawJid = msg.key.remoteJid || '';
-        const fromMe = !!msg.key.fromMe;
-        const pushName = msg.pushName || '';
-        const participant = msg.key.participant || '';
-        const messageId = msg.key.id || '';
-
-        console.log('[DEBUG MESSAGE]', {
-          userId,
-          type,
-          fromMe,
-          remoteJid: rawJid,
-          participant,
-          pushName,
-          messageId,
-        });
-
-        if (!rawJid) {
-          console.log('[IGNORADO] rawJid vazio');
-          continue;
-        }
-
-        if (rawJid === 'status@broadcast') {
-          console.log('[IGNORADO STATUS]', rawJid);
-          continue;
-        }
-
-        if (rawJid.endsWith('@g.us')) {
-          console.log('[IGNORADO GRUPO]', rawJid);
-          continue;
-        }
-
-        if (rawJid.endsWith('@broadcast')) {
-          console.log('[IGNORADO BROADCAST]', rawJid);
-          continue;
-        }
-
-        // Ignora @lid para evitar criar lead inválido
-        if (rawJid.endsWith('@lid')) {
-          console.log('[IGNORADO LID]', rawJid);
-          continue;
-        }
-
-        if (!rawJid.endsWith('@s.whatsapp.net')) {
-          console.log('[IGNORADO JID NAO SUPORTADO]', rawJid);
-          continue;
-        }
-
-        if (!hasMeaningfulContent(msg)) {
-          console.log('[IGNORADO SEM CONTEUDO UTIL]', {
-            rawJid,
-            messageId,
-          });
-          continue;
-        }
-
-        if (isMessageTooOld(msg)) {
-          console.log('[IGNORADO MENSAGEM ANTIGA]', {
-            rawJid,
-            messageId,
-            timestamp: getMessageTimestampSeconds(msg),
-          });
-          continue;
-        }
-
-        const processedKey = buildProcessedMessageKey(userId, msg);
-        if (processedKey && wasMessageProcessedRecently(processedKey)) {
-          console.log('[IGNORADO DUPLICADA]', {
-            rawJid,
-            messageId,
-          });
-          continue;
-        }
-
-        const phone = extractPhoneFromJid(rawJid);
-
-        if (!phone) {
-          console.log('[PHONE INVALIDO - IGNORADO]', {
-            rawJid,
-            messageId,
-          });
-          continue;
-        }
-
-        const name =
-          (typeof pushName === 'string' ? pushName.trim() : '') || '';
-
-        console.log('[ENVIANDO PARA CRM]', {
-          userId,
-          direction: fromMe ? 'outbound' : 'inbound',
-          rawJid,
-          phone,
-          name,
-          messageId,
-        });
-
-        await sendInboundEvent(userId, phone, name);
-
-        if (processedKey) {
-          markMessageProcessed(processedKey);
-        }
-
-        console.log('[ENVIADO COM SUCESSO]', {
-          userId,
-          direction: fromMe ? 'outbound' : 'inbound',
-          phone,
-          messageId,
-        });
-      } catch (e: any) {
-        console.error('[FAILED sendInboundEvent]', e?.message || e);
-      }
-    }
-  });
-
-  return { success: true };
+[QR] QR recebido para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+Sessão atualizada: pendente_qr
+[QR] QR salvo no Supabase para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[RECONNECT] Reiniciando sessão do usuário c284559a-67b7-4a2f-95f3-f858b8b4c536
+[CONNECTION UPDATE] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  connection: 'close',
+  hasQr: false,
+  hasLastDisconnect: true
 }
-
-export function getSessionStatus(userId: string) {
-  return activeSessions.has(userId) ? 'active' : 'inactive';
+[DISCONNECTED] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  statusCode: undefined,
+  message: undefined
 }
-
-export async function disconnectSession(userId: string) {
-  clearReconnectTimer(userId);
-
-  const socket = activeSessions.get(userId);
-  if (socket) {
-    try {
-      await safeSocketLogout(socket);
-    } catch {}
-
-    safeSocketEnd(socket);
-    activeSessions.delete(userId);
-  }
-
-  try {
-    await upsertSession(userId, 'disconnected', null);
-  } catch {}
+[SESSION START] user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[CONNECTION UPDATE] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  connection: 'connecting',
+  hasQr: false,
+  hasLastDisconnect: false
 }
+Sessão atualizada: disconnected
+[CONNECTION UPDATE] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  connection: undefined,
+  hasQr: true,
+  hasLastDisconnect: false
+}
+[QR] QR recebido para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+Sessão atualizada: pending_qr
+[QR] QR salvo no Supabase para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[RECONNECT] Reiniciando sessão do usuário c284559a-67b7-4a2f-95f3-f858b8b4c536
+[CONNECTION UPDATE] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  connection: 'close',
+  hasQr: false,
+  hasLastDisconnect: true
+}
+[DISCONNECTED] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  statusCode: undefined,
+  message: undefined
+}
+Sessão atualizada: disconnected
+[SESSION START] user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[CONNECTION UPDATE] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  connection: 'connecting',
+  hasQr: false,
+  hasLastDisconnect: false
+}
+[CONNECTION UPDATE] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  connection: undefined,
+  hasQr: true,
+  hasLastDisconnect: false
+}
+[QR] QR recebido para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+Sessão atualizada: pending_qr
+[QR] QR salvo no Supabase para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[RECONNECT] Reiniciando sessão do usuário c284559a-67b7-4a2f-95f3-f858b8b4c536
+[CONNECTION UPDATE] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  connection: 'close',
+  hasQr: false,
+  hasLastDisconnect: true
+}
+[DISCONNECTED] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  statusCode: undefined,
+  message: undefined
+}
+[SESSION START] user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[CONNECTION UPDATE] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  connection: 'connecting',
+  hasQr: false,
+  hasLastDisconnect: false
+}
+Sessão atualizada: disconnected
+[CONNECTION UPDATE] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  connection: undefined,
+  hasQr: true,
+  hasLastDisconnect: false
+}
+[QR] QR recebido para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+Sessão atualizada: pending_qr
+[QR] QR salvo no Supabase para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[RECONNECT] Reiniciando sessão do usuário c284559a-67b7-4a2f-95f3-f858b8b4c536
+[CONNECTION UPDATE] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  connection: 'close',
+  hasQr: false,
+  hasLastDisconnect: true
+}
+[DISCONNECTED] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  statusCode: undefined,
+  message: undefined
+}
+[SESSION START] user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[CONNECTION UPDATE] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  connection: 'connecting',
+  hasQr: false,
+  hasLastDisconnect: false
+}
+Sessão atualizada: disconnected
+[CONNECTION UPDATE] {
+  userId: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  connection: undefined,
+  hasQr: true,
+  hasLastDisconnect: false
+}
+[QR] QR recebido para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+Sessão atualizada: pending_qr
+[QR] QR salvo no Supabase para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[RECONNECT] Reiniciando a sessão do usuário c284559a-67b7-4a2f-95f3-f858b8b4c536
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'fechar',
+  hasQr: falso,
+  hasLastDisconnect: true
+}
+[DESCONECTADO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  código de status: indefinido,
+  mensagem: indefinida
+}
+[INÍCIO DA SESSÃO] usuário=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'conectando',
+  hasQr: falso,
+  hasLastDisconnect: falso
+}
+Sessão atualizada: desconectada
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: indefinida,
+  hasQr: verdadeiro,
+  hasLastDisconnect: falso
+}
+[QR] QR recebido para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+Sessão atualizada: pendente_qr
+[QR] QR salvo no Supabase para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[RECONNECT] Reiniciando a sessão do usuário c284559a-67b7-4a2f-95f3-f858b8b4c536
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'fechar',
+  hasQr: falso,
+  hasLastDisconnect: true
+}
+[DESCONECTADO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  código de status: indefinido,
+  mensagem: indefinida
+}
+[INÍCIO DA SESSÃO] usuário=c284559a-67b7-4a2f-95f3-f858b8b4c536
+Menu
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'conectando',
+  hasQr: falso,
+  hasLastDisconnect: falso
+}
+Sessão atualizada: desconectada
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: indefinida,
+  hasQr: verdadeiro,
+  hasLastDisconnect: falso
+}
+[QR] QR recebido para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+Sessão atualizada: pendente_qr
+[QR] QR salvo no Supabase para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[RECONNECT] Reiniciando a sessão do usuário c284559a-67b7-4a2f-95f3-f858b8b4c536
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'fechar',
+  hasQr: falso,
+  hasLastDisconnect: true
+}
+[DESCONECTADO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  código de status: indefinido,
+  mensagem: indefinida
+}
+[INÍCIO DA SESSÃO] usuário=c284559a-67b7-4a2f-95f3-f858b8b4c536
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: 'conectando',
+  hasQr: falso,
+  hasLastDisconnect: falso
+}
+Sessão atualizada: desconectada
+[ATUALIZAÇÃO DE CONEXÃO] {
+  ID do usuário: 'c284559a-67b7-4a2f-95f3-f858b8b4c536',
+  conexão: indefinida,
+  hasQr: verdadeiro,
+  hasLastDisconnect: falso
+}
+[QR] QR recebido para user=c284559a-67b7-4a2f-95f3-f858b8b4c536
