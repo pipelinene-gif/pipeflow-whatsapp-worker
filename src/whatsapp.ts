@@ -418,14 +418,16 @@ export async function startSession(userId: string) {
           continue;
         }
 
-        const name = (typeof pushName === 'string' ? pushName.trim() : '') || '';
+        // ✅ CORREÇÃO: quando fromMe=true, pushName é o SEU nome, não o do contato
+        // Passa vazio para o CRM usar o fallback "Lead WhatsApp"
+        const name = fromMe ? '' : (typeof pushName === 'string' ? pushName.trim() : '');
 
         console.log('[ENVIANDO PARA CRM]', {
           userId,
           direction: fromMe ? 'outbound' : 'inbound',
           rawJid,
           phone,
-          name,
+          name: name || '(sem nome)',
           messageId,
         });
 
