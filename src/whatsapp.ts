@@ -43,16 +43,18 @@ function hasMeaningfulContent(msg: any): boolean {
   const content = msg?.message;
   if (!content || typeof content !== 'object') return false;
 
-  const keys = Object.keys(content);
-  if (keys.length === 0) return false;
-
-  // Versão mais permissiva para voltar a cadastrar
-  // Só ignora eventos totalmente técnicos
-  const ignoredOnlyIfAlone = new Set([
+  const ignoredTopLevelTypes = new Set([
+    'protocolMessage',
+    'reactionMessage',
+    'pollUpdateMessage',
+    'senderKeyDistributionMessage',
     'messageContextInfo',
   ]);
 
-  const usefulKeys = keys.filter((key) => !ignoredOnlyIfAlone.has(key));
+  const keys = Object.keys(content);
+  if (keys.length === 0) return false;
+
+  const usefulKeys = keys.filter((key) => !ignoredTopLevelTypes.has(key));
   return usefulKeys.length > 0;
 }
 
@@ -416,11 +418,7 @@ export async function startSession(userId: string) {
           continue;
         }
 
-        // Não salvar seu nome no outbound
-        const name =
-          !fromMe && typeof pushName === 'string'
-            ? pushName.trim()
-            : '';
+        const name = (typeof pushName === 'string' ? pushName.trim() : '') || '';
 
         console.log('[ENVIANDO PARA CRM]', {
           userId,
@@ -441,7 +439,6 @@ export async function startSession(userId: string) {
           userId,
           direction: fromMe ? 'outbound' : 'inbound',
           phone,
-          name,
           messageId,
         });
       } catch (e: any) {
