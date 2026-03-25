@@ -39,6 +39,23 @@ function extractPhoneFromJid(rawJid: string): string | null {
   return null;
 }
 
+function hasMeaningfulContent(msg: any): boolean {
+  const content = msg?.message;
+  if (!content || typeof content !== 'object') return false;
+
+  const keys = Object.keys(content);
+  if (keys.length === 0) return false;
+
+  // Versão mais permissiva para voltar a cadastrar
+  // Só ignora eventos totalmente técnicos
+  const ignoredOnlyIfAlone = new Set([
+    'messageContextInfo',
+  ]);
+
+  const usefulKeys = keys.filter((key) => !ignoredOnlyIfAlone.has(key));
+  return usefulKeys.length > 0;
+}
+
 function getMessageTimestampSeconds(msg: any): number | null {
   const raw = msg?.messageTimestamp;
 
@@ -152,55 +169,6 @@ function safeSocketLogout(socket: any) {
   } catch {
     return Promise.resolve();
   }
-}
-
-function getMessageKeys(msg: any): string[] {
-  const content = msg?.message;
-  if (!content || typeof content !== 'object') return [];
-  return Object.keys(content);
-}
-
-function hasMeaningfulContent(msg: any): boolean {
-  const keys = getMessageKeys(msg);
-  if (keys.length === 0) return false;
-
-  const usefulTypes = new Set([
-    'conversation',
-    'extendedTextMessage',
-    'imageMessage',
-    'videoMessage',
-    'audioMessage',
-    'documentMessage',
-    'stickerMessage',
-    'contactMessage',
-    'contactsArrayMessage',
-    'locationMessage',
-    'liveLocationMessage',
-    'buttonsResponseMessage',
-    'listResponseMessage',
-    'templateButtonReplyMessage',
-    'interactiveResponseMessage',
-    'reactionMessage',
-  ]);
-
-  return keys.some((key) => usefulTypes.has(key));
-}
-
-function safeExtractTextPreview(msg: any): string {
-  const message = msg?.message || {};
-
-  return (
-    message?.conversation ||
-    message?.extendedTextMessage?.text ||
-    message?.imageMessage?.caption ||
-    message?.videoMessage?.caption ||
-    message?.documentMessage?.caption ||
-    message?.buttonsResponseMessage?.selectedButtonId ||
-    message?.listResponseMessage?.title ||
-    message?.templateButtonReplyMessage?.selectedId ||
-    message?.interactiveResponseMessage?.body?.text ||
-    ''
-  );
 }
 
 async function destroyExistingSession(userId: string) {
@@ -371,8 +339,6 @@ export async function startSession(userId: string) {
         const pushName = msg.pushName || '';
         const participant = msg.key.participant || '';
         const messageId = msg.key.id || '';
-        const messageKeys = getMessageKeys(msg);
-        const preview = safeExtractTextPreview(msg);
 
         console.log('[DEBUG MESSAGE]', {
           userId,
@@ -382,8 +348,6 @@ export async function startSession(userId: string) {
           participant,
           pushName,
           messageId,
-          messageKeys,
-          preview,
         });
 
         if (!rawJid) {
@@ -420,8 +384,6 @@ export async function startSession(userId: string) {
           console.log('[IGNORADO SEM CONTEUDO UTIL]', {
             rawJid,
             messageId,
-            messageKeys,
-            preview,
           });
           continue;
         }
@@ -454,6 +416,7 @@ export async function startSession(userId: string) {
           continue;
         }
 
+        // Não salvar seu nome no outbound
         const name =
           !fromMe && typeof pushName === 'string'
             ? pushName.trim()
@@ -466,8 +429,6 @@ export async function startSession(userId: string) {
           phone,
           name,
           messageId,
-          messageKeys,
-          preview,
         });
 
         await sendInboundEvent(userId, phone, name);
