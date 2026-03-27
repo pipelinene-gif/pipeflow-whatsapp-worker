@@ -20,52 +20,19 @@ const MAX_MESSAGE_AGE_SECONDS = 60 * 15;
 
 function normalizePhone(value: string): string | null {
   const digits = (value || '').replace(/\D/g, '');
-
   if (!digits || digits.length < 10 || digits.length > 15) {
     return null;
   }
-
   return `+${digits}`;
 }
 
 function extractPhoneFromJid(rawJid: string): string | null {
   if (!rawJid) return null;
-
   if (rawJid.endsWith('@s.whatsapp.net')) {
     const base = rawJid.replace('@s.whatsapp.net', '');
     return normalizePhone(base);
   }
-
   return null;
-}
-
-// ✅ NOVA FUNÇÃO: Busca o nome do contato no WhatsApp
-async function getContactName(socket: any, jid: string): Promise<string> {
-  try {
-    // Tenta buscar informações do contato via onWhatsApp
-    const [contact] = await socket.onWhatsApp(jid);
-    
-    if (contact?.notify) {
-      return contact.notify.trim();
-    }
-    
-    if (contact?.name) {
-      return contact.name.trim();
-    }
-    
-    // Tenta pegar do store de contatos do Baileys
-    if (socket.store?.contacts) {
-      const contactInfo = socket.store.contacts[jid];
-      if (contactInfo?.name) {
-        return contactInfo.name.trim();
-      }
-    }
-    
-    return '';
-  } catch (error) {
-    console.error('[GET CONTACT NAME ERROR]', error);
-    return '';
-  }
 }
 
 function hasMeaningfulContent(msg: any): boolean {
@@ -89,32 +56,22 @@ function hasMeaningfulContent(msg: any): boolean {
 
 function getMessageTimestampSeconds(msg: any): number | null {
   const raw = msg?.messageTimestamp;
-
   if (!raw) return null;
   if (typeof raw === 'number') return raw;
-
   if (typeof raw === 'string') {
     const parsed = Number(raw);
     return Number.isFinite(parsed) ? parsed : null;
   }
-
   if (typeof raw?.low === 'number') return raw.low;
-
   if (typeof raw?.toNumber === 'function') {
-    try {
-      return raw.toNumber();
-    } catch {
-      return null;
-    }
+    try { return raw.toNumber(); } catch { return null; }
   }
-
   return null;
 }
 
 function isMessageTooOld(msg: any): boolean {
   const ts = getMessageTimestampSeconds(msg);
   if (!ts) return false;
-
   const now = Math.floor(Date.now() / 1000);
   return now - ts > MAX_MESSAGE_AGE_SECONDS;
 }
@@ -122,7 +79,6 @@ function isMessageTooOld(msg: any): boolean {
 function buildProcessedMessageKey(userId: string, msg: any): string | null {
   const id = msg?.key?.id;
   const remoteJid = msg?.key?.remoteJid;
-
   if (!id || !remoteJid) return null;
   return `${userId}:${remoteJid}:${id}`;
 }
@@ -134,18 +90,15 @@ function markMessageProcessed(key: string) {
 function wasMessageProcessedRecently(key: string): boolean {
   const ts = processedMessages.get(key);
   if (!ts) return false;
-
   if (Date.now() - ts > MESSAGE_CACHE_TTL_MS) {
     processedMessages.delete(key);
     return false;
   }
-
   return true;
 }
 
 function cleanupProcessedMessages() {
   const now = Date.now();
-
   for (const [key, ts] of processedMessages.entries()) {
     if (now - ts > MESSAGE_CACHE_TTL_MS) {
       processedMessages.delete(key);
@@ -166,17 +119,13 @@ function scheduleReconnect(userId: string, delayMs = 3000) {
     console.log(`[RECONNECT IGNORADO] QR pendente para user=${userId}`);
     return;
   }
-
   clearReconnectTimer(userId);
-
   const timer = setTimeout(async () => {
     reconnectTimers.delete(userId);
-
     if (qrPendingUsers.has(userId)) {
       console.log(`[RECONNECT CANCELADO] QR pendente para user=${userId}`);
       return;
     }
-
     try {
       console.log(`[RECONNECT] Reiniciando sessão do usuário ${userId}`);
       await startSession(userId);
@@ -184,22 +133,15 @@ function scheduleReconnect(userId: string, delayMs = 3000) {
       console.error(`[RECONNECT ERROR] user=${userId}`, err?.message || err);
     }
   }, delayMs);
-
   reconnectTimers.set(userId, timer);
 }
 
 function safeSocketEnd(socket: any) {
-  try {
-    socket?.end?.(undefined);
-  } catch {}
+  try { socket?.end?.(undefined); } catch {}
 }
 
 function safeSocketLogout(socket: any) {
-  try {
-    return socket?.logout?.();
-  } catch {
-    return Promise.resolve();
-  }
+  try { return socket?.logout?.(); } catch { return Promise.resolve(); }
 }
 
 async function destroyExistingSession(userId: string) {
@@ -208,13 +150,11 @@ async function destroyExistingSession(userId: string) {
     safeSocketEnd(existing);
     activeSessions.delete(userId);
   }
-
   clearReconnectTimer(userId);
 }
 
 export async function startSession(userId: string) {
   cleanupProcessedMessages();
-
   await destroyExistingSession(userId);
   qrPendingUsers.delete(userId);
 
@@ -247,43 +187,31 @@ export async function startSession(userId: string) {
     const { connection, lastDisconnect, qr } = update;
 
     console.log('[CONNECTION UPDATE]', {
-      userId,
-      connection,
-      hasQr: !!qr,
-      hasLastDisconnect: !!lastDisconnect,
+      userId, connection, hasQr: !!qr, hasLastDisconnect: !!lastDisconnect,
     });
 
     if (qr) {
       try {
         qrPendingUsers.add(userId);
         clearReconnectTimer(userId);
-
         console.log(`[QR] QR recebido para user=${userId}`);
-
         const qrBase64 = await QRCode.toDataURL(qr);
         const base64Only = qrBase64.replace(/^data:image\/png;base64,/, '');
-
         await upsertSession(userId, 'pending_qr', base64Only);
         console.log(`[QR] QR salvo no Supabase para user=${userId}`);
       } catch (e: any) {
         console.error('[QR ERROR]', e?.message || e);
       }
-
       return;
     }
 
     if (connection === 'open') {
       console.log(`[CONNECTED] WhatsApp conectado para user=${userId}`);
-
       qrPendingUsers.delete(userId);
       clearReconnectTimer(userId);
-
-      try {
-        await upsertSession(userId, 'connected', null);
-      } catch (e: any) {
+      try { await upsertSession(userId, 'connected', null); } catch (e: any) {
         console.error('[CONNECTED ERROR]', e?.message || e);
       }
-
       return;
     }
 
@@ -291,12 +219,7 @@ export async function startSession(userId: string) {
       const err = lastDisconnect?.error as Boom | undefined;
       const statusCode = err?.output?.statusCode;
 
-      console.log('[DISCONNECTED]', {
-        userId,
-        statusCode,
-        message: err?.message,
-      });
-
+      console.log('[DISCONNECTED]', { userId, statusCode, message: err?.message });
       activeSessions.delete(userId);
 
       if (qrPendingUsers.has(userId) && !statusCode) {
@@ -306,9 +229,7 @@ export async function startSession(userId: string) {
 
       if (statusCode === 401) {
         console.log(`[401] Sessão inválida. Limpando auth. user=${userId}`);
-
         qrPendingUsers.delete(userId);
-
         try {
           safeSocketEnd(socket);
           await fs.rm(authFolder, { recursive: true, force: true });
@@ -316,42 +237,27 @@ export async function startSession(userId: string) {
           scheduleReconnect(userId, 2000);
         } catch (e: any) {
           console.error('[401 HANDLE ERROR]', e?.message || e);
-          try {
-            await upsertSession(userId, 'disconnected', null);
-          } catch {}
+          try { await upsertSession(userId, 'disconnected', null); } catch {}
         }
-
         return;
       }
 
       if (statusCode === DisconnectReason.loggedOut) {
         console.log(`[LOGGED OUT] user=${userId}`);
-
         qrPendingUsers.delete(userId);
-
-        try {
-          await upsertSession(userId, 'disconnected', null);
-        } catch {}
-
+        try { await upsertSession(userId, 'disconnected', null); } catch {}
         clearReconnectTimer(userId);
         return;
       }
 
-      try {
-        await upsertSession(userId, 'disconnected', null);
-      } catch {}
-
+      try { await upsertSession(userId, 'disconnected', null); } catch {}
       qrPendingUsers.delete(userId);
       scheduleReconnect(userId, 3000);
     }
   });
 
   socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
-    console.log('[MESSAGES UPSERT]', {
-      userId,
-      type,
-      count: messages?.length || 0,
-    });
+    console.log('[MESSAGES UPSERT]', { userId, type, count: messages?.length || 0 });
 
     if (type !== 'notify') {
       console.log(`[IGNORADO] type=${type} user=${userId}`);
@@ -368,118 +274,54 @@ export async function startSession(userId: string) {
         const rawJid = msg.key.remoteJid || '';
         const fromMe = !!msg.key.fromMe;
         const pushName = msg.pushName || '';
-        const participant = msg.key.participant || '';
         const messageId = msg.key.id || '';
 
-        console.log('[DEBUG MESSAGE]', {
-          userId,
-          type,
-          fromMe,
-          remoteJid: rawJid,
-          participant,
-          pushName,
-          messageId,
-        });
+        // --- Filtros de JID ---
+        if (!rawJid) { console.log('[IGNORADO] rawJid vazio'); continue; }
+        if (rawJid === 'status@broadcast') { continue; }
+        if (rawJid.endsWith('@g.us')) { continue; }
+        if (rawJid.endsWith('@broadcast')) { continue; }
 
-        if (!rawJid) {
-          console.log('[IGNORADO] rawJid vazio');
-          continue;
-        }
-
-        if (rawJid === 'status@broadcast') {
-          console.log('[IGNORADO STATUS]', rawJid);
-          continue;
-        }
-
-        if (rawJid.endsWith('@g.us')) {
-          console.log('[IGNORADO GRUPO]', rawJid);
-          continue;
-        }
-
-        if (rawJid.endsWith('@broadcast')) {
-          console.log('[IGNORADO BROADCAST]', rawJid);
-          continue;
-        }
-
-        if (rawJid.endsWith('@lid')) {
-          console.log('[IGNORADO LID]', rawJid);
-          continue;
-        }
+        // @lid = LinkedIn ID interno do WhatsApp. Ignorar silenciosamente.
+        if (rawJid.endsWith('@lid')) { continue; }
 
         if (!rawJid.endsWith('@s.whatsapp.net')) {
           console.log('[IGNORADO JID NAO SUPORTADO]', rawJid);
           continue;
         }
 
+        // --- Filtro de conteúdo ---
         if (!hasMeaningfulContent(msg)) {
-          console.log('[IGNORADO SEM CONTEUDO UTIL]', {
-            rawJid,
-            messageId,
-          });
+          // Log apenas em debug, não é erro
           continue;
         }
 
-        if (isMessageTooOld(msg)) {
-          console.log('[IGNORADO MENSAGEM ANTIGA]', {
-            rawJid,
-            messageId,
-            timestamp: getMessageTimestampSeconds(msg),
-          });
-          continue;
-        }
+        // --- Filtro de mensagem antiga ---
+        if (isMessageTooOld(msg)) { continue; }
 
+        // --- Deduplicação ---
         const processedKey = buildProcessedMessageKey(userId, msg);
-        if (processedKey && wasMessageProcessedRecently(processedKey)) {
-          console.log('[IGNORADO DUPLICADA]', {
-            rawJid,
-            messageId,
-          });
-          continue;
-        }
+        if (processedKey && wasMessageProcessedRecently(processedKey)) { continue; }
 
+        // --- Extrai telefone ---
         const phone = extractPhoneFromJid(rawJid);
-
         if (!phone) {
-          console.log('[PHONE INVALIDO - IGNORADO]', {
-            rawJid,
-            messageId,
-          });
+          console.log('[PHONE INVALIDO - IGNORADO]', { rawJid, messageId });
           continue;
         }
 
-        // ✅ NOVA LÓGICA DE CAPTURA DE NOME
-        let name = '';
-
-        if (fromMe) {
-          // Quando você envia, busca o nome do contato
-          name = await getContactName(socket, rawJid);
-          
-          console.log('[NOME DO CONTATO BUSCADO]', {
-            rawJid,
-            name: name || '(não encontrado - usará fallback)',
-          });
-        } else {
-          // Quando você recebe, usa o pushName que já vem na mensagem
-          name = typeof pushName === 'string' ? pushName.trim() : '';
-        }
+        // --- Nome: se fromMe, envia vazio (CRM usa fallback "Lead WhatsApp") ---
+        const name = fromMe ? '' : (typeof pushName === 'string' ? pushName.trim() : '');
 
         console.log('[ENVIANDO PARA CRM]', {
           userId,
           direction: fromMe ? 'outbound' : 'inbound',
-          rawJid,
           phone,
-          name: name || '(sem nome - CRM usará fallback)',
+          name: name || '(fallback)',
           messageId,
         });
 
-        // Envia para o CRM com dados adicionais
-        await sendInboundEvent(userId, phone, name, {
-          fromMe,
-          pushName,
-          messageId,
-          remoteJid: rawJid,
-          timestamp: getMessageTimestampSeconds(msg),
-        });
+        await sendInboundEvent(userId, phone, name);
 
         if (processedKey) {
           markMessageProcessed(processedKey);
@@ -489,7 +331,6 @@ export async function startSession(userId: string) {
           userId,
           direction: fromMe ? 'outbound' : 'inbound',
           phone,
-          name: name || '(fallback)',
           messageId,
         });
       } catch (e: any) {
@@ -508,18 +349,11 @@ export function getSessionStatus(userId: string) {
 export async function disconnectSession(userId: string) {
   clearReconnectTimer(userId);
   qrPendingUsers.delete(userId);
-
   const socket = activeSessions.get(userId);
   if (socket) {
-    try {
-      await safeSocketLogout(socket);
-    } catch {}
-
+    try { await safeSocketLogout(socket); } catch {}
     safeSocketEnd(socket);
     activeSessions.delete(userId);
   }
-
-  try {
-    await upsertSession(userId, 'disconnected', null);
-  } catch {}
+  try { await upsertSession(userId, 'disconnected', null); } catch {}
 }
