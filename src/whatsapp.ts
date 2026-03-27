@@ -34,11 +34,6 @@ function extractPhoneFromJid(rawJid: string): string | null {
     return normalizePhone(base);
   }
 
-  if (rawJid.endsWith('@lid')) {
-    const base = rawJid.replace('@lid', '');
-    return normalizePhone(base);
-  }
-
   return null;
 }
 
@@ -348,11 +343,12 @@ export async function startSession(userId: string) {
           continue;
         }
 
-        if (
-          !rawJid.endsWith('@s.whatsapp.net') &&
-          !rawJid.endsWith('@lid')
-        ) {
-          console.log('[IGNORADO JID NAO SUPORTADO]', { rawJid, messageId });
+        if (!rawJid.endsWith('@s.whatsapp.net')) {
+          console.log('[IGNORADO JID SEM TELEFONE CONFIAVEL]', {
+            rawJid,
+            messageId,
+            reason: rawJid.endsWith('@lid') ? 'lid' : 'nao_suportado',
+          });
           continue;
         }
 
@@ -381,9 +377,7 @@ export async function startSession(userId: string) {
           console.log('[PHONE INVALIDO - IGNORADO]', {
             rawJid,
             messageId,
-            reason: rawJid.endsWith('@lid')
-              ? 'lid_sem_numero_utilizavel'
-              : 'jid_sem_numero_valido',
+            reason: 'jid_sem_numero_valido',
           });
           continue;
         }
