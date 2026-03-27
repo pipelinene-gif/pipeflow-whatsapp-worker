@@ -28,10 +28,17 @@ function normalizePhone(value: string): string | null {
 
 function extractPhoneFromJid(rawJid: string): string | null {
   if (!rawJid) return null;
+
   if (rawJid.endsWith('@s.whatsapp.net')) {
     const base = rawJid.replace('@s.whatsapp.net', '');
     return normalizePhone(base);
   }
+
+  if (rawJid.endsWith('@lid')) {
+    const base = rawJid.replace('@lid', '');
+    return normalizePhone(base);
+  }
+
   return null;
 }
 
@@ -64,7 +71,11 @@ function getMessageTimestampSeconds(msg: any): number | null {
   }
   if (typeof raw?.low === 'number') return raw.low;
   if (typeof raw?.toNumber === 'function') {
-    try { return raw.toNumber(); } catch { return null; }
+    try {
+      return raw.toNumber();
+    } catch {
+      return null;
+    }
   }
   return null;
 }
@@ -119,13 +130,17 @@ function scheduleReconnect(userId: string, delayMs = 3000) {
     console.log(`[RECONNECT IGNORADO] QR pendente para user=${userId}`);
     return;
   }
+
   clearReconnectTimer(userId);
+
   const timer = setTimeout(async () => {
     reconnectTimers.delete(userId);
+
     if (qrPendingUsers.has(userId)) {
       console.log(`[RECONNECT CANCELADO] QR pendente para user=${userId}`);
       return;
     }
+
     try {
       console.log(`[RECONNECT] Reiniciando sessão do usuário ${userId}`);
       await startSession(userId);
@@ -133,15 +148,22 @@ function scheduleReconnect(userId: string, delayMs = 3000) {
       console.error(`[RECONNECT ERROR] user=${userId}`, err?.message || err);
     }
   }, delayMs);
+
   reconnectTimers.set(userId, timer);
 }
 
 function safeSocketEnd(socket: any) {
-  try { socket?.end?.(undefined); } catch {}
+  try {
+    socket?.end?.(undefined);
+  } catch {}
 }
 
 function safeSocketLogout(socket: any) {
-  try { return socket?.logout?.(); } catch { return Promise.resolve(); }
+  try {
+    return socket?.logout?.();
+  } catch {
+    return Promise.resolve();
+  }
 }
 
 async function destroyExistingSession(userId: string) {
@@ -187,7 +209,10 @@ export async function startSession(userId: string) {
     const { connection, lastDisconnect, qr } = update;
 
     console.log('[CONNECTION UPDATE]', {
-      userId, connection, hasQr: !!qr, hasLastDisconnect: !!lastDisconnect,
+      userId,
+      connection,
+      hasQr: !!qr,
+      hasLastDisconnect: !!lastDisconnect,
     });
 
     if (qr) {
@@ -209,7 +234,9 @@ export async function startSession(userId: string) {
       console.log(`[CONNECTED] WhatsApp conectado para user=${userId}`);
       qrPendingUsers.delete(userId);
       clearReconnectTimer(userId);
-      try { await upsertSession(userId, 'connected', null); } catch (e: any) {
+      try {
+        await upsertSession(userId, 'connected', null);
+      } catch (e: any) {
         console.error('[CONNECTED ERROR]', e?.message || e);
       }
       return;
@@ -219,7 +246,12 @@ export async function startSession(userId: string) {
       const err = lastDisconnect?.error as Boom | undefined;
       const statusCode = err?.output?.statusCode;
 
-      console.log('[DISCONNECTED]', { userId, statusCode, message: err?.message });
+      console.log('[DISCONNECTED]', {
+        userId,
+        statusCode,
+        message: err?.message,
+      });
+
       activeSessions.delete(userId);
 
       if (qrPendingUsers.has(userId) && !statusCode) {
@@ -237,7 +269,9 @@ export async function startSession(userId: string) {
           scheduleReconnect(userId, 2000);
         } catch (e: any) {
           console.error('[401 HANDLE ERROR]', e?.message || e);
-          try { await upsertSession(userId, 'disconnected', null); } catch {}
+          try {
+            await upsertSession(userId, 'disconnected', null);
+          } catch {}
         }
         return;
       }
@@ -245,19 +279,28 @@ export async function startSession(userId: string) {
       if (statusCode === DisconnectReason.loggedOut) {
         console.log(`[LOGGED OUT] user=${userId}`);
         qrPendingUsers.delete(userId);
-        try { await upsertSession(userId, 'disconnected', null); } catch {}
+        try {
+          await upsertSession(userId, 'disconnected', null);
+        } catch {}
         clearReconnectTimer(userId);
         return;
       }
 
-      try { await upsertSession(userId, 'disconnected', null); } catch {}
+      try {
+        await upsertSession(userId, 'disconnected', null);
+      } catch {}
+
       qrPendingUsers.delete(userId);
       scheduleReconnect(userId, 3000);
     }
   });
 
   socket.ev.on('messages.upsert', async ({ messages, type }: any) => {
-    console.log('[MESSAGES UPSERT]', { userId, type, count: messages?.length || 0 });
+    console.log('[MESSAGES UPSERT]', {
+      userId,
+      type,
+      count: messages?.length || 0,
+    });
 
     if (type !== 'notify') {
       console.log(`[IGNORADO] type=${type} user=${userId}`);
@@ -276,42 +319,78 @@ export async function startSession(userId: string) {
         const pushName = msg.pushName || '';
         const messageId = msg.key.id || '';
 
-        // --- Filtros de JID ---
-        if (!rawJid) { console.log('[IGNORADO] rawJid vazio'); continue; }
-        if (rawJid === 'status@broadcast') { continue; }
-        if (rawJid.endsWith('@g.us')) { continue; }
-        if (rawJid.endsWith('@broadcast')) { continue; }
+        console.log('[DEBUG MSG]', {
+          userId,
+          rawJid,
+          fromMe,
+          hasContent: hasMeaningfulContent(msg),
+          isOld: isMessageTooOld(msg),
+          messageId,
+        });
 
-        // @lid = LinkedIn ID interno do WhatsApp. Ignorar silenciosamente.
-        if (rawJid.endsWith('@lid')) { continue; }
-
-        if (!rawJid.endsWith('@s.whatsapp.net')) {
-          console.log('[IGNORADO JID NAO SUPORTADO]', rawJid);
+        if (!rawJid) {
+          console.log('[IGNORADO] rawJid vazio');
           continue;
         }
 
-        // --- Filtro de conteúdo ---
+        if (rawJid === 'status@broadcast') {
+          console.log('[IGNORADO STATUS]', { rawJid, messageId });
+          continue;
+        }
+
+        if (rawJid.endsWith('@g.us')) {
+          console.log('[IGNORADO GRUPO]', { rawJid, messageId });
+          continue;
+        }
+
+        if (rawJid.endsWith('@broadcast')) {
+          console.log('[IGNORADO BROADCAST]', { rawJid, messageId });
+          continue;
+        }
+
+        if (
+          !rawJid.endsWith('@s.whatsapp.net') &&
+          !rawJid.endsWith('@lid')
+        ) {
+          console.log('[IGNORADO JID NAO SUPORTADO]', { rawJid, messageId });
+          continue;
+        }
+
         if (!hasMeaningfulContent(msg)) {
-          // Log apenas em debug, não é erro
+          console.log('[IGNORADO SEM CONTEUDO UTIL]', { rawJid, messageId });
           continue;
         }
 
-        // --- Filtro de mensagem antiga ---
-        if (isMessageTooOld(msg)) { continue; }
+        if (isMessageTooOld(msg)) {
+          console.log('[IGNORADO MSG ANTIGA]', { rawJid, messageId });
+          continue;
+        }
 
-        // --- Deduplicação ---
         const processedKey = buildProcessedMessageKey(userId, msg);
-        if (processedKey && wasMessageProcessedRecently(processedKey)) { continue; }
+        if (processedKey && wasMessageProcessedRecently(processedKey)) {
+          console.log('[IGNORADO DUPLICADA CACHE]', {
+            processedKey,
+            rawJid,
+            messageId,
+          });
+          continue;
+        }
 
-        // --- Extrai telefone ---
         const phone = extractPhoneFromJid(rawJid);
         if (!phone) {
-          console.log('[PHONE INVALIDO - IGNORADO]', { rawJid, messageId });
+          console.log('[PHONE INVALIDO - IGNORADO]', {
+            rawJid,
+            messageId,
+            reason: rawJid.endsWith('@lid')
+              ? 'lid_sem_numero_utilizavel'
+              : 'jid_sem_numero_valido',
+          });
           continue;
         }
 
-        // --- Nome: se fromMe, envia vazio (CRM usa fallback "Lead WhatsApp") ---
-        const name = fromMe ? '' : (typeof pushName === 'string' ? pushName.trim() : '');
+        const name = fromMe
+          ? ''
+          : (typeof pushName === 'string' ? pushName.trim() : '');
 
         console.log('[ENVIANDO PARA CRM]', {
           userId,
@@ -319,6 +398,7 @@ export async function startSession(userId: string) {
           phone,
           name: name || '(fallback)',
           messageId,
+          rawJid,
         });
 
         await sendInboundEvent(userId, phone, name);
@@ -332,6 +412,7 @@ export async function startSession(userId: string) {
           direction: fromMe ? 'outbound' : 'inbound',
           phone,
           messageId,
+          rawJid,
         });
       } catch (e: any) {
         console.error('[FAILED sendInboundEvent]', e?.message || e);
@@ -349,11 +430,18 @@ export function getSessionStatus(userId: string) {
 export async function disconnectSession(userId: string) {
   clearReconnectTimer(userId);
   qrPendingUsers.delete(userId);
+
   const socket = activeSessions.get(userId);
   if (socket) {
-    try { await safeSocketLogout(socket); } catch {}
+    try {
+      await safeSocketLogout(socket);
+    } catch {}
+
     safeSocketEnd(socket);
     activeSessions.delete(userId);
   }
-  try { await upsertSession(userId, 'disconnected', null); } catch {}
+
+  try {
+    await upsertSession(userId, 'disconnected', null);
+  } catch {}
 }
