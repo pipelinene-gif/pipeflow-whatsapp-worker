@@ -39,6 +39,35 @@ function extractPhoneFromJid(rawJid: string): string | null {
   return null;
 }
 
+// ✅ NOVA FUNÇÃO: Busca o nome do contato no WhatsApp
+async function getContactName(socket: any, jid: string): Promise<string> {
+  try {
+    // Tenta buscar informações do contato via onWhatsApp
+    const [contact] = await socket.onWhatsApp(jid);
+    
+    if (contact?.notify) {
+      return contact.notify.trim();
+    }
+    
+    if (contact?.name) {
+      return contact.name.trim();
+    }
+    
+    // Tenta pegar do store de contatos do Baileys
+    if (socket.store?.contacts) {
+      const contactInfo = socket.store.contacts[jid];
+      if (contactInfo?.name) {
+        return contactInfo.name.trim();
+      }
+    }
+    
+    return '';
+  } catch (error) {
+    console.error('[GET CONTACT NAME ERROR]', error);
+    return '';
+  }
+}
+
 function hasMeaningfulContent(msg: any): boolean {
   const content = msg?.message;
   if (!content || typeof content !== 'object') return false;
@@ -418,20 +447,39 @@ export async function startSession(userId: string) {
           continue;
         }
 
-        // ✅ CORREÇÃO: quando fromMe=true, pushName é o SEU nome, não o do contato
-        // Passa vazio para o CRM usar o fallback "Lead WhatsApp"
-        const name = fromMe ? '' : (typeof pushName === 'string' ? pushName.trim() : '');
+        // ✅ NOVA LÓGICA DE CAPTURA DE NOME
+        let name = '';
+
+        if (fromMe) {
+          // Quando você envia, busca o nome do contato
+          name = await getContactName(socket, rawJid);
+          
+          console.log('[NOME DO CONTATO BUSCADO]', {
+            rawJid,
+            name: name || '(não encontrado - usará fallback)',
+          });
+        } else {
+          // Quando você recebe, usa o pushName que já vem na mensagem
+          name = typeof pushName === 'string' ? pushName.trim() : '';
+        }
 
         console.log('[ENVIANDO PARA CRM]', {
           userId,
           direction: fromMe ? 'outbound' : 'inbound',
           rawJid,
           phone,
-          name: name || '(sem nome)',
+          name: name || '(sem nome - CRM usará fallback)',
           messageId,
         });
 
-        await sendInboundEvent(userId, phone, name);
+        // Envia para o CRM com dados adicionais
+        await sendInboundEvent(userId, phone, name, {
+          fromMe,
+          pushName,
+          messageId,
+          remoteJid: rawJid,
+          timestamp: getMessageTimestampSeconds(msg),
+        });
 
         if (processedKey) {
           markMessageProcessed(processedKey);
@@ -441,6 +489,7 @@ export async function startSession(userId: string) {
           userId,
           direction: fromMe ? 'outbound' : 'inbound',
           phone,
+          name: name || '(fallback)',
           messageId,
         });
       } catch (e: any) {
