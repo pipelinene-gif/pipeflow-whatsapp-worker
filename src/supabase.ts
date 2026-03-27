@@ -33,68 +33,42 @@ export async function upsertSession(
 export async function sendInboundEvent(
   userId: string,
   phone: string,
-  name: string,
-  messageData?: {
-    fromMe: boolean;
-    pushName: string;
-    messageId: string;
-    remoteJid: string;
-    timestamp: number | null;
-  }
+  name: string
 ) {
-  try {
-    // (OPCIONAL) Salva a mensagem no histórico para análise futura
-    if (messageData) {
-      try {
-        await supabase.from('whatsapp_messages').insert({
-          user_id: userId,
-          phone,
-          contact_name: name,
-          push_name: messageData.pushName,
-          message_id: messageData.messageId,
-          from_me: messageData.fromMe,
-          remote_jid: messageData.remoteJid,
-          timestamp: messageData.timestamp,
-        });
-        
-        console.log('[MENSAGEM SALVA NO HISTORICO]', {
-          phone,
-          name,
-          fromMe: messageData.fromMe,
-        });
-      } catch (historyError: any) {
-        // Se a tabela não existir ainda, apenas loga mas não falha
-        console.log('[AVISO] Erro ao salvar histórico (tabela pode não existir ainda):', historyError.message);
-      }
-    }
+  const url = `${CONFIG.SUPABASE_URL}/functions/v1/whatsapp-inbound-event`;
 
-    // Envia para a edge function criar/atualizar o cliente
-    const response = await fetch(
-      `${CONFIG.SUPABASE_URL}/functions/v1/whatsapp-inbound-event`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Worker-Key': CONFIG.WORKER_KEY,
-        },
-        body: JSON.stringify({ 
-          user_id: userId, 
-          phone, 
-          name,
-          from_me: messageData?.fromMe || false,
-          message_id: messageData?.messageId,
-          timestamp: messageData?.timestamp,
-        }),
-      }
-    );
+  console.log('[CHAMANDO EDGE FUNCTION]', { url, userId, phone, name: name || '(vazio)' });
 
-    const result = await response.json();
-    
-    console.log('[RESPOSTA DA EDGE FUNCTION]', result);
-    
-    return result;
-  } catch (err: any) {
-    console.error('[ERRO AO ENVIAR EVENTO INBOUND]', err?.message || err);
-    throw err;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Worker-Key': CONFIG.WORKER_KEY,
+    },
+    body: JSON.stringify({
+      user_id: userId,
+      phone,
+      name,
+    }),
+  });
+
+  const body = await response.text();
+
+  if (!response.ok) {
+    console.error('[EDGE FUNCTION ERRO]', {
+      status: response.status,
+      body,
+    });
+    throw new Error(`Edge function retornou ${response.status}: ${body}`);
   }
+
+  let result: any;
+  try {
+    result = JSON.parse(body);
+  } catch {
+    result = { raw: body };
+  }
+
+  console.log('[EDGE FUNCTION OK]', result);
+  return result;
 }
